@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Timeout: 90
+    Runtime: python3.11
+    MemorySize: 128
+    Environment:
+      Variables:
+        TELEGRAM_BOT_TOKEN: !Sub "${botToken}"
+        ALLOWED_USERNAMES: !Sub "${AllowedUsernames}" # Comma separated list
+        OPENAI_API_KEY: !Sub "${OpenAiApiKey}"
+
+Parameters:
+  botToken:
+    Type: String
+  OpenAiApiKey:
+    Type: String
+  AllowedUsernames:
+    Type: String
+
+Resources:
+  # Lambda functions
+  UpdatesHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/handlers/messages
+      Handler: main.handler
+      Timeout: 27
+      Events:
+        ProcessMessage:
+          Type: Api
+          Properties:
+            Path: /messages
+            Method: post
+    Metadata:
+      BuildMethod: python3.11
