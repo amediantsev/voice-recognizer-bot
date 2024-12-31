@@ -3,7 +3,7 @@ Transform: AWS::Serverless-2016-10-31
 
 Globals:
   Function:
-    Timeout: 90
+    Timeout: 60
     Runtime: python3.11
     MemorySize: 128
     Environment:
@@ -11,6 +11,8 @@ Globals:
         TELEGRAM_BOT_TOKEN: !Sub "${botToken}"
         ALLOWED_USERNAMES: !Sub "${AllowedUsernames}" # Comma separated list
         OPENAI_API_KEY: !Sub "${OpenAiApiKey}"
+        OLLAMA_HOST: !Sub "http://${OllamaALB}.compute-1.amazonaws.com:11434"
+        OLLAMA_MODEL: "llama3.2:3b"
 
 Parameters:
   botToken:
@@ -19,10 +21,125 @@ Parameters:
     Type: String
   AllowedUsernames:
     Type: String
+  DefaultVPC:
+    Type: AWS::EC2::VPC::Id
+    Description: "ID of the VPC where ECS and Lambda will run"
+  DefaultSubnets:
+    # A simplified version with default VPC and default subnets.
+    # It is highly recommended to make VPC Subnets private in the production!!!
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: "Subnets (comma-separated) in the VPC"
 
 Resources:
-  # Lambda functions
-  UpdatesHandler:
+  # ECS infrastructure
+  MyCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: "OllamaCluster"
+  OllamaTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "OllamaTask"
+      Cpu: 512
+      Memory: 1024
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ContainerDefinitions:
+        - Name: ollama-container
+          Image: "ollama/ollama:latest"
+          PortMappings:
+            - ContainerPort: 11434
+              Protocol: tcp
+          Environment:
+            - Name: OLLAMA_MODEL
+              Value: "llama3.2:3b"
+      ExecutionRoleArn: !GetAtt OllamaTaskRole.Arn
+      TaskRoleArn: !GetAtt OllamaTaskRole.Arn
+  OllamaTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  OllamaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow inbound HTTP from ALB to Ollama container"
+      VpcId: !Ref DefaultVPC  # We use Default VPC (defined below)
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 11411
+          ToPort: 11411
+          CidrIp: 0.0.0.0/0   # Just an example. The access should be restricted in the production.
+  OllamaService:
+    Type: AWS::ECS::Service
+    DependsOn: MyCluster
+    Properties:
+      Cluster: !Ref MyCluster
+      ServiceName: "OllamaService"
+      LaunchType: FARGATE
+      TaskDefinition: !Ref OllamaTaskDefinition
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref DefaultSubnets
+          SecurityGroups:
+            - !Ref OllamaSecurityGroup
+      LoadBalancers:
+        - ContainerName: "ollama-container"
+          ContainerPort: 11411
+          TargetGroupArn: !Ref OllamaTargetGroup
+  OllamaALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: "OllamaPublicALB"
+      Scheme: internet-facing
+      Subnets: !Ref DefaultSubnets
+      SecurityGroups:
+        - !Ref OllamaALBSecurityGroup
+  OllamaALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow inbound HTTP to ALB"
+      VpcId: !Ref DefaultVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0  # for test
+  OllamaListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref OllamaALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref OllamaTargetGroup
+  OllamaTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "OllamaTG"
+      Port: 11411
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref DefaultVPC
+      HealthCheckPath: "/api/version"  # Ollama might not have the endpoint '/health'
+      Matcher:
+        HttpCode: "200-399"
+
+  # Lambdas
+  TelegramUpdatesHandler:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: src/handlers/messages
@@ -36,3 +153,15 @@ Resources:
             Method: post
     Metadata:
       BuildMethod: python3.11
+
+
+Outputs:
+  FunctionArn:
+    Description: The ARN of the TelegramUpdatesHandler
+    Value: !GetAtt TelegramUpdatesHandler.Arn
+  ApiUrl:
+    Description: "API endpoint for Telegram webhook"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/telegram-webhook"
+  OllamaALBDNSName:
+    Description: "Public DNS of the ALB running Ollama"
+    Value: !GetAtt OllamaALB.DNSName
