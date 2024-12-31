@@ -25,38 +25,31 @@ def handle_forwarded_voice(update: Update):
     file_id = voice.file_id
 
     # Get file path from Telegram API
-    response = requests.get(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
-        params={"file_id": file_id}
-    )
+    response = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile", params={"file_id": file_id})
     response.raise_for_status()
-    file_path = response.json()['result']['file_path']
+    file_path = response.json()["result"]["file_path"]
 
     # Download the file
     file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
     ogg_file_name = f"/tmp/{file_id}.ogg"
     with requests.get(file_url, stream=True) as r:
         r.raise_for_status()
-        with open(ogg_file_name, 'wb') as f:
+        with open(ogg_file_name, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
 
     # Send the file to OpenAI for transcription
-    with open(ogg_file_name, 'rb') as audio_file:
+    with open(ogg_file_name, "rb") as audio_file:
         transcript = openai.Audio.transcribe("whisper-1", audio_file)
 
-    recognized_text = transcript['text']
+    recognized_text = transcript["text"]
 
     # Reply to the message
     chat_id = message.chat_id
     message_id = message.message_id
     response = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        data={
-            "chat_id": chat_id,
-            "text": recognized_text,
-            "reply_to_message_id": message_id
-        }
+        data={"chat_id": chat_id, "text": recognized_text, "reply_to_message_id": message_id},
     )
     response.raise_for_status()
 
