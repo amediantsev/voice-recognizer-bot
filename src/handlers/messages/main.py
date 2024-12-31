@@ -18,7 +18,13 @@ ALLOWED_USERNAMES = os.getenv("ALLOWED_USERNAMES", "").split(",")
 
 def handle_forwarded_voice(update: Update):
     message = update.message
-    if not (message.voice and message.forward_origin and message.from_user.username in ALLOWED_USERNAMES):
+
+    if any((
+        message is None,
+        message.voice is None,
+        message.forward_origin is None,
+        message.from_user.username not in ALLOWED_USERNAMES,
+    )):  # fmt: skip
         return
 
     voice = message.voice
@@ -49,7 +55,11 @@ def handle_forwarded_voice(update: Update):
     message_id = message.message_id
     response = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        data={"chat_id": chat_id, "text": recognized_text, "reply_to_message_id": message_id},
+        data={
+            "chat_id": chat_id,
+            "text": f"The voice message transcription:\n\n{recognized_text}",
+            "reply_to_message_id": message_id,
+        },
     )
     response.raise_for_status()
 
